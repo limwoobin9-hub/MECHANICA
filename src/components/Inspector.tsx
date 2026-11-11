@@ -1,9 +1,10 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { SlidersHorizontal, ChevronDown, CircleDot, Link2, Trash2, Copy, RotateCw, Info, ArrowUpRight, Group, Ungroup, AlignHorizontalJustifyCenter, AlignVerticalJustifyCenter, Bookmark, Activity, Zap } from 'lucide-react';
 import { type Part, type Connection, ROTARY, LINEAR, LOGIC, radiusOf, inertiaOf } from '../model/types';
 import { CONNECTION_NAMES, makeConnection } from '../model/library';
 import { useEditor, connectionFromSelection } from '../store/editor';
 import { useSimulation } from '../store/simulation';
+import { GearAssist } from './GearAssist';
 import { PartIcon } from './PartIcon';
 type FieldProps={label:string;value:number;unit?:string;min?:number;max?:number;step?:number;disabled?:boolean;onChange:(v:number)=>void};
 export function NumericField({label,value,unit,min=-10000,max=10000,step=.1,disabled,onChange}:FieldProps){
@@ -16,14 +17,16 @@ function Section({title,children,badge}:{title:string;children:React.ReactNode;b
 const fmt=(n:number,d=2)=>Number.isFinite(n)?n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
 export function Inspector(){
   const project=useEditor(s=>s.project),selected=useEditor(s=>s.selected),mode=useSimulation(s=>s.mode),engine=useSimulation(s=>s.engine),metrics=useSimulation(s=>s.metrics);
+  const panel=useRef<HTMLElement>(null);
+  useEffect(()=>{const el=panel.current?.querySelector('.inspector-scroll');if(el)el.scrollTop=0;},[selected.join(',')]);
   const system=useSimulation(s=>s.system);
   const [tab,setTab]=useState<'properties'|'measure'>('properties'),[expanded,setExpanded]=useState<string|null>(null),[connectKind,setConnectKind]=useState<Connection['kind']>('gear');
   const base=project.parts.find(p=>p.id===selected[0]);
   const part=base?(engine?.parts.get(base.id)?.part??base):undefined,m=part?metrics[part.id]:undefined,design=mode==='design';
   const edit=(patch:Partial<Part>)=>{if(!part)return;if(design)useEditor.getState().patchPart(part.id,patch);else{engine?.setLive(part.id,patch);useSimulation.getState().publish();}};
   const patchConnection=(id:string,patch:Partial<Connection>)=>{if(!design){engine?.setConnectionLive(id,patch);useSimulation.getState().publish();return;}useEditor.getState().commit(p=>{const c=p.connections.find(c=>c.id===id);if(c)Object.assign(c,patch);});};
-  return <aside className="inspector-panel"><div className="panel-heading"><div><SlidersHorizontal size={15}/><h2>속성 검사기</h2></div><span className="tiny-label">INSPECTOR</span></div>
-    {selected.length>1?<div className="inspector-scroll"><div className="selection-summary"><span className="selected-part-icon"><Group size={26}/></span><h3>{selected.length}개 부품 선택</h3><p>부품을 함께 편집하고 연결하세요.</p></div>
+  return <aside className="inspector-panel" ref={panel}><div className="panel-heading"><div><SlidersHorizontal size={15}/><h2>속성 검사기</h2></div><span className="tiny-label">INSPECTOR</span></div>
+    {selected.length>1?<div className="inspector-scroll">{design&&<GearAssist/>}<div className="selection-summary"><span className="selected-part-icon"><Group size={26}/></span><h3>{selected.length}개 부품 선택</h3><p>부품을 함께 편집하고 연결하세요.</p></div>
       <Section title="선택 편집"><div className="action-grid"><button disabled={!design} onClick={()=>useEditor.getState().group()}><Group size={15}/> 그룹화</button><button disabled={!design} onClick={()=>useEditor.getState().ungroup()}><Ungroup size={15}/> 그룹 해제</button><button disabled={!design} onClick={()=>useEditor.getState().align('x')}><AlignHorizontalJustifyCenter size={15}/> X 정렬</button><button disabled={!design} onClick={()=>useEditor.getState().align('y')}><AlignVerticalJustifyCenter size={15}/> Y 정렬</button><button disabled={!design} onClick={()=>useEditor.getState().duplicate()}><Copy size={15}/> 복제</button><button disabled={!design} onClick={()=>useEditor.getState().rotateSelected(Math.PI/12)}><RotateCw size={15}/> 15° 회전</button></div><button className="secondary full" disabled={!design} onClick={()=>useEditor.setState({dialog:'module'})}><Bookmark size={13}/> 사용자 모듈로 저장</button></Section>
       {selected.length===2&&<Section title="부품 연결"><select className="full-select" aria-label="선택한 부품의 연결 종류" value={connectKind} onChange={e=>setConnectKind(e.target.value as typeof connectKind)}>{Object.entries(CONNECTION_NAMES).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select><button className="primary full" disabled={!design} onClick={()=>connectionFromSelection(connectKind)}><Link2 size={14}/> 선택한 부품 연결</button><button className="secondary full" disabled={!design} onClick={()=>useEditor.getState().meshSelected()}>기어 중심거리 맞추기</button><p className="field-hint">동축 연결은 중심을 겹치고, 기어 맞물림은 피치 원을 접하게 배치하세요.</p></Section>}
       <button className="danger-text full" disabled={!design} onClick={()=>useEditor.getState().removeSelected()}><Trash2 size={13}/> 선택한 부품 삭제</button>
@@ -31,6 +34,7 @@ export function Inspector(){
       <div className="selected-part"><span className={`selected-part-icon ${part.color}`}><PartIcon kind={part.kind} size={28}/></span><div><input aria-label="부품 이름" value={part.name} disabled={!design} onChange={e=>edit({name:e.target.value.slice(0,100)||'부품'})}/><span>{part.kind.toUpperCase()}<i/> {part.mounted?'고정 회전축':LINEAR.has(part.kind)?'직선 레일':LOGIC.has(part.kind)?'제어 요소':part.kind==='frame'?'고정 강체':'자유 강체'}</span></div><button className="icon-button" aria-label="선택한 부품 복제" disabled={!design} title="복제 (Ctrl+D)" onClick={()=>useEditor.getState().duplicate()}><Copy size={14}/></button></div>
       <div className="inspector-tabs"><button className={tab==='properties'?'active':''} onClick={()=>setTab('properties')}>속성</button><button className={tab==='measure'?'active':''} onClick={()=>setTab('measure')}><Activity size={12}/> 실시간 측정</button></div>
       <div className="inspector-scroll">
+        {design&&<GearAssist/>}
         {LOGIC.has(part.kind)?<div className={`signal-reading ${m?.signal?'on':''}`}><span className="signal-dot"/><span>제어 신호</span><strong>{m?.signal?'HIGH · 1':'LOW · 0'}</strong></div>:<div className="live-readings"><div><span>회전 속도</span><strong>{fmt(m?.rpm??0,1)}<small>RPM</small></strong><span className="reading-sub"><span className="mint-dot"/>{mode==='running'?'실시간 측정':'대기 중'}</span></div><div><span>전달 토크</span><strong>{fmt(m?.torque??0,2)}<small>N·m</small></strong><span className="reading-sub">{ROTARY.has(part.kind)?`I = ${fmt(inertiaOf(part),3)}`:'실제 관절 반력'}</span></div></div>}
         {!design&&<div className="experiment-note"><Info size={12}/> 실험값은 설계 복귀 시 초기화됩니다.</div>}
         {tab==='measure'?<>
@@ -41,6 +45,7 @@ export function Inspector(){
           <Section title="실험 도구"><p className="field-hint">시뮬레이션 중 강체를 드래그하면 힘을 가합니다. 아래 버튼은 1 N·s 또는 1 N·m·s의 충격량을 가합니다.</p><div className="action-grid"><button disabled={design} onClick={()=>engine?.impulse(part.id,{x:1,y:0})}>+X 충격</button><button disabled={design} onClick={()=>engine?.impulse(part.id,{x:-1,y:0})}>−X 충격</button><button disabled={design} onClick={()=>engine?.angularImpulse(part.id,1)}>+ 회전 충격</button><button disabled={design} onClick={()=>engine?.angularImpulse(part.id,-1)}>− 회전 충격</button></div></Section>
         </>:<>
           {!LOGIC.has(part.kind)&&<>
+            {!ROTARY.has(part.kind)&&<p className="field-hint">작업 공간의 네모 손잡이를 드래그하면 길이·높이를 바꿀 수 있습니다.</p>}
             <Section title="변환" badge={<span className="section-unit">WORLD</span>}><div className="field-grid"><NumericField label="위치 X" value={part.x} unit="m" disabled={!design} onChange={x=>edit({x})}/><NumericField label="위치 Y" value={part.y} unit="m" disabled={!design} onChange={y=>edit({y})}/></div><NumericField label="회전" value={part.angle*180/Math.PI} unit="°" step={project.settings.rotationSnap} disabled={!design} onChange={angle=>edit({angle:angle*Math.PI/180})}/></Section>
             <Section title="물리 속성"><div className="field-grid">
               <NumericField label="질량" value={part.mass} unit="kg" min={.01} max={10000} disabled={!design} onChange={mass=>edit({mass})}/>

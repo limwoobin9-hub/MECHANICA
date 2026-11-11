@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { validateMechanism } from '../physics/validation';
 import { MechanicaEngine, DT, type Metric } from '../physics/engine';
 import { type Mode } from '../model/types';
 import { useEditor } from './editor';
@@ -10,7 +11,7 @@ interface SimulationState {
 }
 export const useSimulation=create<SimulationState>((set,get)=>({
   mode:'design',engine:null,time:0,fps:60,overloaded:false,metrics:{},samples:[],tracking:'',system:{input:0,output:0,efficiency:null,energy:0},
-  start(){const s=get();try{const engine=s.engine??new MechanicaEngine(useEditor.getState().project);set({engine,mode:'running'});}catch(error){useEditor.getState().notify(error instanceof Error?error.message:'시뮬레이션을 시작할 수 없습니다.');}},
+  start(){const s=get();try{const engine=s.engine??new MechanicaEngine(useEditor.getState().project);set({engine,mode:'running'});}catch(error){const editor=useEditor.getState(),issue=validateMechanism(editor.project).find(i=>i.level==='error'),c=editor.project.connections.find(c=>c.id===issue?.connection);if(c)editor.select([c.a,c.b]);editor.notify((error instanceof Error?error.message:'시뮬레이션을 시작할 수 없습니다.')+(c?.kind==='gear'?' · 오른쪽 맞물림 도우미로 바로 수정하세요.':''));}},
   pause(){set({mode:'paused'});},
   stop(){get().engine?.endDrag();set({engine:null,mode:'design',time:0,metrics:{},samples:[],overloaded:false,system:{input:0,output:0,efficiency:null,energy:0}});resetClock();},
   step(){try{const e=get().engine??new MechanicaEngine(useEditor.getState().project);e.step();set({engine:e,mode:'paused'});get().publish();}catch(error){useEditor.getState().notify(error instanceof Error?error.message:'물리 계산 오류');}},

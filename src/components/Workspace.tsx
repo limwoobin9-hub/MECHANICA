@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { MousePointer2, Move, Link2, Magnet, Grid3X3, Crosshair, Minus, Plus, Scan, ChevronRight, Layers3 } from 'lucide-react';
 import { useEditor } from '../store/editor';
 import { useSimulation, simulationFrame } from '../store/simulation';
-import { type Part, type Vec, type Tool, ROTARY, LOGIC, radiusOf, localToWorld, worldToLocal, portsOf } from '../model/types';
+import { type Part, type Vec, type Tool, ROTARY, LOGIC, radiusOf, localToWorld, worldToLocal, portsOf, isGear } from '../model/types';
 import { makePart, makeConnection, LIBRARY, CONNECTION_NAMES, type LibraryItem } from '../model/library';
+import { snapGear, resizeFromEdge, resizable, resizeHandles } from '../model/editing';
 import { nearestPort } from '../physics/validation';
 import { drawPart, drawConnection, drawAnnotations, drawVector, partBounds } from './render';
-type Drag={kind:'pan';start:Vec;camera:Vec}|{kind:'parts';start:Vec;positions:Map<string,Vec>;preview:Map<string,Vec>}|{kind:'box';start:Vec;end:Vec;shift:boolean}|{kind:'physical'};
+type Drag={kind:'resize';original:Part;edge:number;preview:Part}|{kind:'pan';start:Vec;camera:Vec}|{kind:'parts';start:Vec;positions:Map<string,Vec>;preview:Map<string,Vec>}|{kind:'box';start:Vec;end:Vec;shift:boolean}|{kind:'physical'};
 export function Workspace(){
   const canvas=useRef<HTMLCanvasElement>(null),container=useRef<HTMLDivElement>(null);
   const dims=useRef({width:1,height:1}),drag=useRef<Drag|null>(null),pointer=useRef<Vec>({x:0,y:0}),hover=useRef<string|null>(null);
@@ -45,7 +46,7 @@ export function Workspace(){
       for(let x=Math.floor(left/grid)*grid;x<right;x+=grid)for(let y=Math.floor(top/grid)*grid;y<bottom;y+=grid){ctx.beginPath();ctx.arc(x,y,.65/k,0,Math.PI*2);ctx.fill();}
       ctx.lineWidth=1/k;ctx.strokeStyle='#52677a15';ctx.beginPath();for(let x=Math.floor(left/(grid*4))*grid*4;x<right;x+=grid*4){ctx.moveTo(x,top);ctx.lineTo(x,bottom);}for(let y=Math.floor(top/(grid*4))*grid*4;y<bottom;y+=grid*4){ctx.moveTo(left,y);ctx.lineTo(right,y);}ctx.stroke();
       const preview=drag.current?.kind==='parts'?drag.current.preview:null;
-      const parts=preview?s.project.parts.map(p=>({...p,...preview.get(p.id)})):s.project.parts;
+      const parts=preview?s.project.parts.map(p=>({...p,...preview.get(p.id)})):drag.current?.kind==='resize'?s.project.parts.map(p=>p.id===(drag.current as Extract<Drag,{kind:'resize'}>).preview.id?(drag.current as Extract<Drag,{kind:'resize'}>).preview:p):s.project.parts;
       const project={...s.project,parts};
       const index=new Map(parts.map(p=>[p.id,p]));
       const visible=parts.filter(p=>{const pose=engine?.pose(p.id)??p,extent=ROTARY.has(p.kind)?radiusOf(p)+.8:Math.hypot(p.width,p.height)/2+.8;return pose.x+extent>left&&pose.x-extent<right&&pose.y+extent>top&&pose.y-extent<bottom;});
@@ -53,6 +54,15 @@ export function Workspace(){
       for(const p of visible)drawPart(ctx,p,s.selected.includes(p.id),hover.current===p.id,k,engine);
       if(s.project.settings.showConnections)for(const c of project.connections.filter(c=>!['signal','spring','rope','weld'].includes(c.kind)))drawConnection(ctx,c,project,engine,k,index);
       if(s.project.settings.showLabels&&k>30)for(const p of visible)drawAnnotations(ctx,p,k,engine,s.selected.includes(p.id));
+      if(sim.mode==='design'){
+        for(const p of visible){
+          if(isGear(p)&&(s.selected.includes(p.id)||drag.current?.kind==='parts')){ctx.save();ctx.strokeStyle='#7eddb290';ctx.lineWidth=1/k;ctx.setLineDash([5/k,4/k]);ctx.beginPath();ctx.arc(p.x,p.y,radiusOf(p),0,Math.PI*2);ctx.stroke();ctx.restore();}
+          if(s.tool==='select'&&!s.placing&&s.selected.length===1&&s.selected[0]===p.id&&resizable(p)){
+            for(const h of resizeHandles(p)){const at=localToWorld(p,h);ctx.fillStyle='#8fe8c1';ctx.strokeStyle='#183e2c';ctx.lineWidth=1/k;ctx.fillRect(at.x-5/k,at.y-5/k,10/k,10/k);ctx.strokeRect(at.x-5/k,at.y-5/k,10/k,10/k);}
+            ctx.fillStyle='#aad9c5';ctx.font=`${11/k}px system-ui`;ctx.textAlign='center';ctx.fillText(`↔ ${p.width.toFixed(2)} m  ×  ${p.height.toFixed(2)} m · 네모를 드래그`,p.x,p.y+(Math.abs(Math.sin(p.angle))*p.width+Math.abs(Math.cos(p.angle))*p.height)/2+22/k);ctx.textAlign='left';
+          }
+        }
+      }
       if(s.project.settings.showVectors&&engine){
         for(const p of visible){const m=engine.metric(p.id)!;if(m.speed>.001)drawVector(ctx,m,{x:m.x+m.vx*.2,y:m.y+m.vy*.2},'#8dbfee',k);const r=engine.parts.get(p.id)!;if(r.mount){const f=r.mount.getReactionForce(120);if(f.length()>.05)drawVector(ctx,m,{x:m.x+f.x*.012,y:m.y+f.y*.012},'#e4b677',k);}if(ROTARY.has(p.kind)&&Math.abs(m.omega)>.01){const rad=radiusOf(p)*.53,dir=Math.sign(m.omega),end=dir*1.1;ctx.beginPath();ctx.arc(m.x,m.y,rad,0,end,dir<0);ctx.strokeStyle='#8ae9bd';ctx.lineWidth=1.5/k;ctx.stroke();const at={x:m.x+Math.cos(end)*rad,y:m.y+Math.sin(end)*rad};drawVector(ctx,{x:at.x+Math.sin(end)*dir*.08,y:at.y-Math.cos(end)*dir*.08},at,'#8ae9bd',k);}}
         for(const p of engine.contacts){ctx.beginPath();ctx.arc(p.x,p.y,3/k,0,Math.PI*2);ctx.fillStyle='#edb275';ctx.fill();}
@@ -71,14 +81,16 @@ export function Workspace(){
     }
     request=requestAnimationFrame(draw);
     const wheel=(e:WheelEvent)=>{e.preventDefault();const pt=eventPoint(e),before=toWorld(pt),camera=useEditor.getState().camera,next=Math.max(18,Math.min(350,camera.scale*Math.exp(-e.deltaY*.0015)));useEditor.setState({camera:{scale:next,x:before.x-(pt.x-dims.current.width/2)/next,y:before.y-(pt.y-dims.current.height/2)/next}});};
+    const cancel=(e:KeyboardEvent)=>{if(e.key==='Escape'){drag.current=null;useSimulation.getState().engine?.endDrag();}};window.addEventListener('keydown',cancel);
     el.addEventListener('wheel',wheel,{passive:false});
-    return()=>{cancelAnimationFrame(request);resize.disconnect();el.removeEventListener('wheel',wheel);};
+    return()=>{window.removeEventListener('keydown',cancel);cancelAnimationFrame(request);resize.disconnect();el.removeEventListener('wheel',wheel);};
   },[]);
   function down(e:React.PointerEvent<HTMLCanvasElement>){
     if(e.button===2)return;e.currentTarget.setPointerCapture(e.pointerId);
     const pt=eventPoint(e),w=toWorld(pt),s=useEditor.getState(),sim=useSimulation.getState();pointer.current=pt;
     if(s.tool==='pan'||e.button===1){drag.current={kind:'pan',start:pt,camera:{x:s.camera.x,y:s.camera.y}};return;}
     if(s.placing&&sim.mode==='design'){const grid=s.project.settings.gridSize;const point=s.project.settings.snap?{x:Math.round(w.x/grid)*grid,y:Math.round(w.y/grid)*grid}:w;s.addLibrary(s.placing,point);return;}
+    if(sim.mode==='design'&&s.tool==='select'&&s.selected.length===1){const chosen=s.project.parts.find(p=>p.id===s.selected[0]);if(chosen&&resizable(chosen)){const edge=resizeHandles(chosen).findIndex(h=>{const a=localToWorld(chosen,h);return Math.hypot(a.x-w.x,a.y-w.y)<10/s.camera.scale;});if(edge>=0){drag.current={kind:'resize',original:chosen,edge,preview:chosen};return;}}}
     const p=hit(w);
     if(s.tool==='connect'&&sim.mode==='design'){
       if(!p)return;const center=['gear','shaft','belt','crossed','rack','clutch','signal'].includes(s.connectionKind),port=center?{x:0,y:0}:nearestPort(p,w,portsOf(p));
@@ -95,10 +107,11 @@ export function Workspace(){
   }
   function move(e:React.PointerEvent<HTMLCanvasElement>){
     const pt=eventPoint(e),w=toWorld(pt);pointer.current=pt;setCursor(w);const d=drag.current,s=useEditor.getState();
-    if(!d){hover.current=hit(w)?.id??null;return;}
+    if(!d){hover.current=hit(w)?.id??null;const chosen=s.project.parts.find(p=>p.id===s.selected[0]);let onHandle=false;if(useSimulation.getState().mode==='design'&&s.tool==='select'&&!s.placing&&s.selected.length===1&&chosen&&resizable(chosen))onHandle=resizeHandles(chosen).some(h=>{const a=localToWorld(chosen,h);return Math.hypot(a.x-w.x,a.y-w.y)<10/s.camera.scale;});if(canvas.current)canvas.current.style.cursor=onHandle?'nwse-resize':s.tool==='pan'?'grab':s.placing||s.tool==='connect'?'crosshair':'default';return;}
     if(d.kind==='pan'){useEditor.setState({camera:{...s.camera,x:d.camera.x-(pt.x-d.start.x)/s.camera.scale,y:d.camera.y-(pt.y-d.start.y)/s.camera.scale}});}
     else if(d.kind==='box')d.end=w;
     else if(d.kind==='physical')useSimulation.getState().engine?.drag(w);
+    else if(d.kind==='resize'){d.preview=resizeFromEdge(d.original,d.edge,w,s.project.settings.snap&&!e.altKey?s.project.settings.gridSize:0);}
     else if(d.kind==='parts'){
       let dx=w.x-d.start.x,dy=w.y-d.start.y;const first=d.positions.values().next().value!;
       if(s.project.settings.snap&&!e.altKey){const grid=s.project.settings.gridSize;dx=Math.round((first.x+dx)/grid)*grid-first.x;dy=Math.round((first.y+dy)/grid)*grid-first.y;
@@ -106,19 +119,21 @@ export function Workspace(){
         for(const[id,old]of d.positions){const p=s.project.parts.find(p=>p.id===id)!;for(const port of portsOf(p)){const a=localToWorld({...p,x:old.x+dx,y:old.y+dy},port);for(const other of s.project.parts){if(d.positions.has(other.id))continue;for(const bport of portsOf(other)){const b=localToWorld(other,bport),dist=Math.hypot(b.x-a.x,b.y-a.y);if(dist<closest){closest=dist;adjust={x:b.x-a.x,y:b.y-a.y};}}}}}
         if(adjust){dx+=adjust.x;dy+=adjust.y;}
       }
+      if(s.project.settings.snap&&!e.altKey&&d.positions.size===1){const id=[...d.positions.keys()][0],p=s.project.parts.find(p=>p.id===id)!,old=d.positions.get(id)!;const snapped=snapGear({...p,x:old.x+dx,y:old.y+dy},s.project.parts,18/s.camera.scale);if(snapped){dx=snapped.point.x-old.x;dy=snapped.point.y-old.y;}}
       d.preview=new Map([...d.positions].map(([id,p])=>[id,{x:p.x+dx,y:p.y+dy}]));
     }
   }
   function up(e:React.PointerEvent<HTMLCanvasElement>){
     const d=drag.current,s=useEditor.getState();drag.current=null;
     if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);
+    if(d?.kind==='resize'&&Math.abs(d.preview.width-d.original.width)+Math.abs(d.preview.height-d.original.height)>.001)s.resizePart(d.preview);
     if(d?.kind==='physical')useSimulation.getState().engine?.endDrag();
     if(d?.kind==='parts'){const changed=[...d.preview].some(([id,p])=>Math.hypot(p.x-d.positions.get(id)!.x,p.y-d.positions.get(id)!.y)>.001);if(changed)s.moveParts(d.preview);}
     if(d?.kind==='box'){const minX=Math.min(d.start.x,d.end.x),maxX=Math.max(d.start.x,d.end.x),minY=Math.min(d.start.y,d.end.y),maxY=Math.max(d.start.y,d.end.y);const ids=s.project.parts.filter(p=>p.x>=minX&&p.x<=maxX&&p.y>=minY&&p.y<=maxY).map(p=>p.id);s.select(d.shift?[...new Set([...s.selected,...ids])]:ids);}
   }
   const setTool=(tool:Tool)=>{useEditor.setState({tool,placing:null,from:null});};
   return <div className={`workspace ${tool==='pan'?'panning':placing||tool==='connect'?'placing':''}`} ref={container}>
-    <canvas ref={canvas} aria-label="기계 설계 작업 공간" tabIndex={0} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onContextMenu={e=>e.preventDefault()} onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='copy';}} onDrop={e=>{e.preventDefault();if(mode!=='design')return;const kind=e.dataTransfer.getData('mechanica/part') as LibraryItem['kind'];if(LIBRARY.some(i=>i.kind===kind))useEditor.getState().addLibrary(kind,toWorld(eventPoint(e)));}} />
+    <canvas ref={canvas} aria-label="기계 설계 작업 공간" tabIndex={0} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={()=>{drag.current=null;useSimulation.getState().engine?.endDrag();}} onContextMenu={e=>e.preventDefault()} onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='copy';}} onDrop={e=>{e.preventDefault();if(mode!=='design')return;const kind=e.dataTransfer.getData('mechanica/part') as LibraryItem['kind'];if(LIBRARY.some(i=>i.kind===kind))useEditor.getState().addLibrary(kind,toWorld(eventPoint(e)));}} />
     <div className="canvas-breadcrumb"><Layers3 size={13}/><span>{name}</span><ChevronRight size={12}/><span className="muted">작업 공간</span></div>
     <div className="canvas-badges"><span className={`mode-pill ${mode!=='design'?'live':''}`}><i/>{mode==='design'?'DESIGN':mode==='running'?'LIVE PHYSICS':'PAUSED'}</span><span className="si-badge">SI · m / kg / s</span></div>
     <div className="floating-tools" role="toolbar" aria-label="편집 도구">

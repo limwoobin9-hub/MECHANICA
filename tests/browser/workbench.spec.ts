@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { EXAMPLES } from '../../src/model/examples';
+import { makePart } from '../../src/model/library';
 test.beforeEach(async({page})=>{await page.goto('/');await expect(page.locator('.brand h1')).toHaveText('MECHANICA');});
 test('simulation runs, pauses, steps, and restores the design',async({page})=>{
   const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
@@ -79,4 +81,27 @@ test('builds a new working geared machine from independent library parts',async(
   await page.getByRole('button',{name:'선택 도구',exact:true}).click();await page.locator('.tree-row').last().click();
   await page.getByRole('button',{name:'시뮬레이션 실행',exact:true}).click();
   await expect.poll(async()=>parseFloat((await page.locator('.live-readings strong').first().textContent())??'0')).toBeLessThan(-5);
+});
+test('repairs a gear distance error with the visible one-click assistant',async({page})=>{
+ const x=page.getByRole('spinbutton',{name:'위치 X',exact:true});await x.fill('-1.2');await x.press('Tab');
+ await page.getByRole('button',{name:'시뮬레이션 실행',exact:true}).click();await expect(page.locator('.gear-assist')).toContainText('위치 조정 필요');await expect(page.locator('.gear-assist')).toContainText('300 mm');
+ await page.getByRole('button',{name:'위치 맞추고 연결',exact:true}).click();await expect(page.locator('.gear-assist')).toContainText('맞물림 연결됨');
+ await page.getByRole('button',{name:'시뮬레이션 실행',exact:true}).click();await expect(page.locator('.mode-pill')).toHaveText('LIVE PHYSICS');
+});
+test('resizes a frame using a canvas handle and undoes the change',async({page})=>{
+ const p=EXAMPLES[0].build();p.parts=[makePart('frame',0,0,{width:3,height:.25})];p.connections=[];
+ await page.getByLabel('프로젝트 JSON 파일').setInputFiles({name:'frame.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(p))});
+ const width=page.getByRole('spinbutton',{name:'너비',exact:true});await expect(width).toHaveValue('3');
+ const canvas=page.getByLabel('기계 설계 작업 공간'),box=(await canvas.boundingBox())!;
+ const x=box.x+box.width/2+1.5*115,y=box.y+box.height/2-.025*115;
+ await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+115,y,{steps:12});await page.mouse.up();await expect(width).toHaveValue('4');
+ await page.keyboard.press('Control+z');await page.locator('.tree-row').first().click();await expect(width).toHaveValue('3');
+ await page.screenshot({path:'test-results/resizing-handles.png'});
+});
+test('dragging nearby gears snaps to pitch distance instead of the grid',async({page})=>{
+ const p=EXAMPLES[0].build();p.parts=[makePart('gear',0,0),makePart('gear',1.5,0)];p.connections=[];
+ await page.getByLabel('프로젝트 JSON 파일').setInputFiles({name:'snap.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(p))});await expect(page.locator('.tree-row')).toHaveCount(2);
+ const box=(await page.getByLabel('기계 설계 작업 공간').boundingBox())!,x=box.x+box.width/2+.75*115,y=box.y+box.height/2-.025*115;
+ await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x-25,y,{steps:10});await page.mouse.up();
+ await expect(page.getByRole('spinbutton',{name:'위치 X',exact:true})).toHaveValue('1.2');await expect(page.locator('.gear-assist')).toContainText('위치 정상');
 });
